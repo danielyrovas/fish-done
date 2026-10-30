@@ -140,8 +140,14 @@ function __done_is_screen_window_active
     string match --quiet --regex "$STY\s+\(Attached" (screen -ls)
 end
 
+function __done_is_herdr_pane_focused
+    # only the pane that has focus in all of herdr has "focused":true
+    herdr pane current 2>/dev/null | string match --quiet '*"focused":true*'
+end
+
 function __done_is_process_window_focused
     # Return false if the window is not focused
+    set -e __done_herdr_pane_not_focused
 
     if set -q __done_allow_nongraphical
         return 1
@@ -180,6 +186,15 @@ function __done_is_process_window_focused
         return $status
     end
 
+    # If inside herdr, check if the herdr pane is focused
+    if test -n "$HERDR_PANE_ID"
+        __done_is_herdr_pane_focused
+        and return 0
+        # the app is in front, so __done_ended sends the notification with herdr
+        set -g __done_herdr_pane_not_focused
+        return 1
+    end
+
     return 0
 end
 
@@ -199,9 +214,9 @@ function __done_humanize_duration -a milliseconds
     end
 end
 
-# verify that the system has graphical capabilities before initializing
+# the window id is not checked here, so startup does not wait for it
+# without graphical capabilities the id is empty, so no notification is sent
 if test -z "$SSH_CLIENT" # not over ssh
-    and count (__done_get_focused_window_id) >/dev/null # is able to get window id
     set __done_enabled
 end
 
@@ -211,7 +226,6 @@ if set -q __done_allow_nongraphical
 end
 
 if set -q __done_enabled
-    set -g __done_initial_window_id ''
     set -q __done_min_cmd_duration; or set -g __done_min_cmd_duration 5000
     set -q __done_exclude; or set -g __done_exclude '^git (?!push|pull|fetch)'
     set -q __done_notify_sound; or set -g __done_notify_sound 0
@@ -220,7 +234,8 @@ if set -q __done_enabled
     set -q __done_notification_duration; or set -g __done_notification_duration 3000
 
     function __done_started --on-event fish_preexec
-        set __done_initial_window_id (__done_get_focused_window_id)
+        # the window that holds this shell does not change, so get its id only once
+        set -q __done_initial_window_id; or set -g __done_initial_window_id (__done_get_focused_window_id)
     end
 
     function __done_ended --on-event fish_postexec
@@ -231,7 +246,6 @@ if set -q __done_enabled
 
         if test -n "$cmd_duration"
             and test "$cmd_duration" -gt "$__done_min_cmd_duration" # longer than notify_duration
-            and not __done_is_process_window_focused # process pane or window not focused
 
             # don't notify if command matches exclude list
             for pattern in $__done_exclude
@@ -239,6 +253,9 @@ if set -q __done_enabled
                     return
                 end
             end
+
+            # process pane or window focused
+            __done_is_process_window_focused; and return
 
             # Store duration of last command
             set -l humanized_duration (__done_humanize_duration "$cmd_duration")
@@ -261,6 +278,11 @@ if set -q __done_enabled
                 if test "$__done_notify_sound" -eq 1
                     echo -e "\a" # bell sound
                 end
+
+            else if set -q __done_herdr_pane_not_focused
+                set -l position
+                set -q __done_herdr_notification_position; and set position --position $__done_herdr_notification_position
+                herdr notification show "$title" --body "$message" --sound done $position >/dev/null
 
             else if set -q KITTY_WINDOW_ID
                 printf "\x1b]99;i=done:d=0;$title\x1b\\"
@@ -342,6 +364,7 @@ function __done_uninstall -e done_uninstall
     functions -e __done_get_focused_window_id
     functions -e __done_is_tmux_window_active
     functions -e __done_is_screen_window_active
+    functions -e __done_is_herdr_pane_focused
     functions -e __done_is_process_window_focused
     functions -e __done_windows_notification
     functions -e __done_run_powershell_script
